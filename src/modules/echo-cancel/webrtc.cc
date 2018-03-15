@@ -36,7 +36,6 @@ PA_C_DECL_END
 
 #include <webrtc/modules/audio_processing/include/audio_processing.h>
 #include <webrtc/modules/include/module_common_types.h>
-#include <webrtc/system_wrappers/include/trace.h>
 
 #define BLOCK_SIZE_US 10000
 
@@ -75,7 +74,6 @@ static const char* const valid_modargs[] = {
     "beamforming",
     "mic_geometry", /* documented in parse_mic_geometry() */
     "target_direction", /* documented in parse_mic_geometry() */
-    "trace",
     NULL
 };
 
@@ -93,20 +91,6 @@ static int routing_mode_from_string(const char *rmode) {
     else
         return -1;
 }
-
-class PaWebrtcTraceCallback : public webrtc::TraceCallback {
-    void Print(webrtc::TraceLevel level, const char *message, int length)
-    {
-        if (level & webrtc::kTraceError || level & webrtc::kTraceCritical)
-            pa_log(message);
-        else if (level & webrtc::kTraceWarning)
-            pa_log_warn(message);
-        else if (level & webrtc::kTraceInfo)
-            pa_log_info(message);
-        else
-            pa_log_debug(message);
-    }
-};
 
 static int webrtc_volume_from_pa(pa_volume_t v)
 {
@@ -242,7 +226,6 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
     int rm = -1, i;
     uint32_t agc_start_volume;
     pa_modargs *ma;
-    bool trace = false;
 
     if (!(ma = pa_modargs_new(args, valid_modargs))) {
         pa_log("Failed to parse submodule arguments.");
@@ -360,19 +343,6 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
         pa_log_warn("The intelligibility enhancer is not currently supported");
     if (experimental_agc)
         config.Set<webrtc::ExperimentalAgc>(new webrtc::ExperimentalAgc(true, ec->params.webrtc.agc_start_volume));
-
-    trace = DEFAULT_TRACE;
-    if (pa_modargs_get_value_boolean(ma, "trace", &trace) < 0) {
-        pa_log("Failed to parse trace value");
-        goto fail;
-    }
-
-    if (trace) {
-        webrtc::Trace::CreateTrace();
-        webrtc::Trace::set_level_filter(webrtc::kTraceAll);
-        ec->params.webrtc.trace_callback = new PaWebrtcTraceCallback();
-        webrtc::Trace::SetTraceCallback((PaWebrtcTraceCallback *) ec->params.webrtc.trace_callback);
-    }
 
     webrtc_ec_fixate_spec(rec_ss, rec_map, play_ss, play_map, out_ss, out_map, beamforming);
 
@@ -496,10 +466,7 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
 fail:
     if (ma)
         pa_modargs_free(ma);
-    if (ec->params.webrtc.trace_callback) {
-        webrtc::Trace::ReturnTrace();
-        delete ((PaWebrtcTraceCallback *) ec->params.webrtc.trace_callback);
-    } if (apm)
+    if (apm)
         delete apm;
 
     return false;
@@ -576,11 +543,6 @@ void pa_webrtc_ec_run(pa_echo_canceller *ec, const uint8_t *rec, const uint8_t *
 
 void pa_webrtc_ec_done(pa_echo_canceller *ec) {
     int i;
-
-    if (ec->params.webrtc.trace_callback) {
-        webrtc::Trace::ReturnTrace();
-        delete ((PaWebrtcTraceCallback *) ec->params.webrtc.trace_callback);
-    }
 
     if (ec->params.webrtc.apm) {
         delete (webrtc::AudioProcessing*)ec->params.webrtc.apm;
