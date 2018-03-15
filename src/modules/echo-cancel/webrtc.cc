@@ -393,7 +393,9 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
             config.Set<webrtc::Beamforming>(new webrtc::Beamforming(true, geometry, direction));
     }
 
-    apm = webrtc::AudioProcessing::Create(config);
+    apm = webrtc::AudioProcessingBuilder().Create();
+    //FIXME: use the new config API
+    //apm->ApplyConfig(config);
 
     pconfig = {
         webrtc::StreamConfig(rec_ss->rate, rec_ss->channels, false), /* input stream */
