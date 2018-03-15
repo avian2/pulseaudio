@@ -35,7 +35,7 @@ PA_C_DECL_BEGIN
 PA_C_DECL_END
 
 #include <webrtc/modules/audio_processing/include/audio_processing.h>
-#include <webrtc/modules/interface/module_common_types.h>
+#include <webrtc/modules/include/module_common_types.h>
 #include <webrtc/system_wrappers/include/trace.h>
 
 #define BLOCK_SIZE_US 10000
