@@ -39,7 +39,6 @@ PA_C_DECL_END
 
 #define BLOCK_SIZE_US 10000
 
-#define DEFAULT_HIGH_PASS_FILTER true
 #define DEFAULT_NOISE_SUPPRESSION true
 #define DEFAULT_ANALOG_GAIN_CONTROL true
 #define DEFAULT_DIGITAL_GAIN_CONTROL false
@@ -59,6 +58,7 @@ PA_C_DECL_END
 
 static const char* const valid_modargs[] = {
     "high_pass_filter",
+    "residual_echo_detector",
     "noise_suppression",
     "analog_gain_control",
     "digital_gain_control",
@@ -221,8 +221,9 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
                        uint32_t *nframes, const char *args) {
     webrtc::AudioProcessing *apm = NULL;
     webrtc::ProcessingConfig pconfig;
+    webrtc::AudioProcessing::Config apm_config;
     webrtc::Config config;
-    bool hpf, ns, agc, dgc, mobile, cn, vad, ext_filter, intelligibility, experimental_agc, beamforming;
+    bool ns, agc, dgc, mobile, cn, vad, ext_filter, intelligibility, experimental_agc, beamforming;
     int rm = -1, i;
     uint32_t agc_start_volume;
     pa_modargs *ma;
@@ -232,9 +233,13 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
         goto fail;
     }
 
-    hpf = DEFAULT_HIGH_PASS_FILTER;
-    if (pa_modargs_get_value_boolean(ma, "high_pass_filter", &hpf) < 0) {
+    if (pa_modargs_get_value_boolean(ma, "high_pass_filter", &apm_config.high_pass_filter.enabled) < 0) {
         pa_log("Failed to parse high_pass_filter value");
+        goto fail;
+    }
+
+    if (pa_modargs_get_value_boolean(ma, "residual_echo_detector", &apm_config.residual_echo_detector.enabled) < 0) {
+        pa_log("Failed to parse residual_echo_detector value");
         goto fail;
     }
 
@@ -394,8 +399,8 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
     }
 
     apm = webrtc::AudioProcessingBuilder().Create();
-    //FIXME: use the new config API
-    //apm->ApplyConfig(config);
+    apm->SetExtraOptions(config);
+    apm->ApplyConfig(apm_config);
 
     pconfig = {
         webrtc::StreamConfig(rec_ss->rate, rec_ss->channels, false), /* input stream */
@@ -407,9 +412,6 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
         pa_log("Error initialising audio processing module");
         goto fail;
     }
-
-    if (hpf)
-        apm->high_pass_filter()->Enable(true);
 
     if (!mobile) {
         apm->echo_cancellation()->enable_drift_compensation(ec->params.drift_compensation);
