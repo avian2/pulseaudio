@@ -36,6 +36,7 @@ PA_C_DECL_END
 
 #include <webrtc/modules/audio_processing/include/audio_processing.h>
 #include <webrtc/modules/include/module_common_types.h>
+#include <webrtc/rtc_base/logging.h>
 
 #define BLOCK_SIZE_US 10000
 
@@ -55,6 +56,17 @@ PA_C_DECL_END
 #define DEFAULT_TRACE false
 
 #define WEBRTC_AGC_MAX_VOLUME 255
+
+class PALogSink : public rtc::LogSink {
+    public:
+        PALogSink() {};
+        ~PALogSink() {};
+
+        void OnLogMessage(const std::string& message)
+        {
+            pa_log(message.c_str());
+        }
+};
 
 static const char* const valid_modargs[] = {
     "high_pass_filter",
@@ -223,10 +235,14 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
     webrtc::ProcessingConfig pconfig;
     webrtc::AudioProcessing::Config apm_config;
     webrtc::Config config;
+    PALogSink *logsink = NULL;
     bool ns, agc, dgc, mobile, cn, vad, ext_filter, intelligibility, experimental_agc, beamforming;
     int rm = -1, i;
     uint32_t agc_start_volume;
     pa_modargs *ma;
+
+    logsink = new PALogSink;
+    rtc::LogMessage::AddLogToStream(logsink, rtc::LS_INFO);
 
     if (!(ma = pa_modargs_new(args, valid_modargs))) {
         pa_log("Failed to parse submodule arguments.");
@@ -452,6 +468,7 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
         apm->voice_detection()->Enable(true);
 
     ec->params.webrtc.apm = apm;
+    ec->params.webrtc.logsink = logsink;
     ec->params.webrtc.rec_ss = *rec_ss;
     ec->params.webrtc.play_ss = *play_ss;
     ec->params.webrtc.out_ss = *out_ss;
@@ -472,6 +489,9 @@ fail:
         pa_modargs_free(ma);
     if (apm)
         delete apm;
+    if (logsink) {
+        delete logsink;
+    }
 
     return false;
 }
@@ -551,6 +571,11 @@ void pa_webrtc_ec_done(pa_echo_canceller *ec) {
     if (ec->params.webrtc.apm) {
         delete (webrtc::AudioProcessing*)ec->params.webrtc.apm;
         ec->params.webrtc.apm = NULL;
+    }
+
+    if (ec->params.webrtc.logsink) {
+        delete (PALogSink*)ec->params.webrtc.logsink;
+        ec->params.webrtc.logsink = NULL;
     }
 
     for (i = 0; i < ec->params.webrtc.rec_ss.channels; i++)
