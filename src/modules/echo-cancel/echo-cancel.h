@@ -64,10 +64,10 @@ struct pa_echo_canceller_params {
             /* This is a void* so that we don't have to convert this whole file
              * to C++ linkage. apm is a pointer to an AudioProcessing object */
             void *apm;
+            void *logsink;
             unsigned int blocksize; /* in frames */
             pa_sample_spec rec_ss, play_ss, out_ss;
             float *rec_buffer[PA_CHANNELS_MAX], *play_buffer[PA_CHANNELS_MAX]; /* for deinterleaved buffers */
-            void *trace_callback;
             bool agc;
             bool first;
             unsigned int agc_start_volume;
