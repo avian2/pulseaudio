@@ -86,6 +86,8 @@ static const char* const valid_modargs[] = {
     "beamforming",
     "mic_geometry", /* documented in parse_mic_geometry() */
     "target_direction", /* documented in parse_mic_geometry() */
+    "log_config", /* space-separated keywords, e.g. "verbose debug".
+		     See ConfigureLogging() */
     NULL
 };
 
@@ -236,17 +238,23 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
     webrtc::AudioProcessing::Config apm_config;
     webrtc::Config config;
     PALogSink *logsink = NULL;
+    const char *log_config = NULL;
     bool ns, agc, dgc, mobile, cn, vad, ext_filter, intelligibility, experimental_agc, beamforming;
     int rm = -1, i;
     uint32_t agc_start_volume;
     pa_modargs *ma;
 
     logsink = new PALogSink;
-    rtc::LogMessage::AddLogToStream(logsink, rtc::LS_INFO);
+    rtc::LogMessage::AddLogToStream(logsink, rtc::LS_VERBOSE);
 
     if (!(ma = pa_modargs_new(args, valid_modargs))) {
         pa_log("Failed to parse submodule arguments.");
         goto fail;
+    }
+
+    log_config = pa_modargs_get_value(ma, "log_config", NULL);
+    if (log_config) {
+        rtc::LogMessage::ConfigureLogging(log_config);
     }
 
     if (pa_modargs_get_value_boolean(ma, "high_pass_filter", &apm_config.high_pass_filter.enabled) < 0) {
