@@ -582,6 +582,7 @@ void pa_webrtc_ec_done(pa_echo_canceller *ec) {
     }
 
     if (ec->params.webrtc.logsink) {
+        rtc::LogMessage::RemoveLogToStream((PALogSink*)ec->params.webrtc.logsink);
         delete (PALogSink*)ec->params.webrtc.logsink;
         ec->params.webrtc.logsink = NULL;
     }
