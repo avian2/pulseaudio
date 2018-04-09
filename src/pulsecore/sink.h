@@ -115,7 +115,6 @@ struct pa_sink {
 
     pa_hashmap *ports;
     pa_device_port *active_port;
-    pa_atomic_t mixer_dirty;
 
     /* The latency offset is inherited from the currently active port */
     int64_t port_latency_offset;
@@ -124,18 +123,31 @@ struct pa_sink {
 
     bool set_mute_in_progress;
 
-    /* Called when the main loop requests a state change. Called from
-     * main loop context. If returns -1 the state change will be
-     * inhibited. This will also be called even if only the suspend cause
+    /* Callbacks for doing things when the sink state and/or suspend cause is
+     * changed. It's fine to set either or both of the callbacks to NULL if the
+     * implementation doesn't have anything to do on state or suspend cause
      * changes.
      *
-     * s->state and s->suspend_cause haven't been updated yet when this is
-     * called, so the callback can get the old state through those variables.
+     * set_state_in_main_thread() is called first. The callback is allowed to
+     * report failure if and only if the sink changes its state from
+     * SUSPENDED to IDLE or RUNNING. (FIXME: It would make sense to allow
+     * failure also when changing state from INIT to IDLE or RUNNING, but
+     * currently that will crash pa_sink_put().) If
+     * set_state_in_main_thread() fails, set_state_in_io_thread() won't be
+     * called.
      *
-     * If set_state() is successful, the IO thread will be notified with the
-     * SET_STATE message. The message handler is allowed to fail, in which
-     * case the old state is restored, and set_state() is called again. */
-    int (*set_state)(pa_sink *s, pa_sink_state_t state, pa_suspend_cause_t suspend_cause); /* may be NULL */
+     * If set_state_in_main_thread() is successful (or not set), then
+     * set_state_in_io_thread() is called. Again, failure is allowed if and
+     * only if the sink changes state from SUSPENDED to IDLE or RUNNING. If
+     * set_state_in_io_thread() fails, then set_state_in_main_thread() is
+     * called again, this time with the state parameter set to SUSPENDED and
+     * the suspend_cause parameter set to 0.
+     *
+     * pa_sink.state, pa_sink.thread_info.state and pa_sink.suspend_cause
+     * are updated only after all the callback calls. In case of failure, the
+     * state is set to SUSPENDED and the suspend cause is set to 0. */
+    int (*set_state_in_main_thread)(pa_sink *s, pa_sink_state_t state, pa_suspend_cause_t suspend_cause); /* may be NULL */
+    int (*set_state_in_io_thread)(pa_sink *s, pa_sink_state_t state, pa_suspend_cause_t suspend_cause); /* may be NULL */
 
     /* Sink drivers that support hardware volume may set this
      * callback. This is called when the current volume needs to be
@@ -238,8 +250,8 @@ struct pa_sink {
      * thread context. */
     pa_sink_cb_t update_requested_latency; /* may be NULL */
 
-    /* Called whenever the port shall be changed. Called from IO
-     * thread if deferred volumes are enabled, and main thread otherwise. */
+    /* Called whenever the port shall be changed. Called from the main
+     * thread. */
     int (*set_port)(pa_sink *s, pa_device_port *port); /* may be NULL */
 
     /* Called to get the list of formats supported by the sink, sorted
@@ -343,7 +355,6 @@ typedef enum pa_sink_message {
     PA_SINK_MESSAGE_GET_MAX_REQUEST,
     PA_SINK_MESSAGE_SET_MAX_REWIND,
     PA_SINK_MESSAGE_SET_MAX_REQUEST,
-    PA_SINK_MESSAGE_SET_PORT,
     PA_SINK_MESSAGE_UPDATE_VOLUME_AND_MUTE,
     PA_SINK_MESSAGE_SET_PORT_LATENCY_OFFSET,
     PA_SINK_MESSAGE_MAX
@@ -470,7 +481,6 @@ bool pa_sink_get_mute(pa_sink *sink, bool force_refresh);
 bool pa_sink_update_proplist(pa_sink *s, pa_update_mode_t mode, pa_proplist *p);
 
 int pa_sink_set_port(pa_sink *s, const char *name, bool save);
-void pa_sink_set_mixer_dirty(pa_sink *s, bool is_dirty);
 
 unsigned pa_sink_linked_by(pa_sink *s); /* Number of connected streams */
 unsigned pa_sink_used_by(pa_sink *s); /* Number of connected streams which are not corked */
