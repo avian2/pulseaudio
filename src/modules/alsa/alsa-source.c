@@ -143,6 +143,10 @@ struct userdata {
     pa_alsa_ucm_mapping_context *ucm_context;
 };
 
+enum {
+    SOURCE_MESSAGE_SYNC_MIXER = PA_SOURCE_MESSAGE_MAX
+};
+
 static void userdata_free(struct userdata *u);
 
 static pa_hook_result_t reserve_cb(pa_reserve_wrapper *r, void *forced, struct userdata *u) {
@@ -1023,6 +1027,43 @@ fail:
     return -PA_ERR_IO;
 }
 
+/* Called from the IO thread or the main thread depending on whether deferred
+ * volume is enabled or not (with deferred volume all mixer handling is done
+ * from the IO thread).
+ *
+ * Sets the mixer settings to match the current source and port state (the port
+ * is given as an argument, because active_port may still point to the old
+ * port, if we're switching ports). */
+static void sync_mixer(struct userdata *u, pa_device_port *port) {
+    pa_alsa_setting *setting = NULL;
+
+    pa_assert(u);
+
+    if (!u->mixer_path)
+        return;
+
+    /* port may be NULL, because if we use a synthesized mixer path, then the
+     * source has no ports. */
+    if (port) {
+        pa_alsa_port_data *data;
+
+        data = PA_DEVICE_PORT_DATA(port);
+        setting = data->setting;
+    }
+
+    pa_alsa_path_select(u->mixer_path, setting, u->mixer_handle, u->source->muted);
+
+    if (u->source->set_mute)
+        u->source->set_mute(u->source);
+    if (u->source->flags & PA_SOURCE_DEFERRED_VOLUME) {
+        if (u->source->write_volume)
+            u->source->write_volume(u->source);
+    } else {
+        if (u->source->set_volume)
+            u->source->set_volume(u->source);
+    }
+}
+
 /* Called from IO context */
 static int source_process_msg(pa_msgobject *o, int code, void *data, int64_t offset, pa_memchunk *chunk) {
     struct userdata *u = PA_SOURCE(o)->userdata;
@@ -1040,57 +1081,34 @@ static int source_process_msg(pa_msgobject *o, int code, void *data, int64_t off
             return 0;
         }
 
-        case PA_SOURCE_MESSAGE_SET_STATE:
+        case SOURCE_MESSAGE_SYNC_MIXER: {
+            pa_device_port *port = data;
 
-            switch ((pa_source_state_t) PA_PTR_TO_UINT(data)) {
-
-                case PA_SOURCE_SUSPENDED: {
-                    pa_assert(PA_SOURCE_IS_OPENED(u->source->thread_info.state));
-
-                    suspend(u);
-
-                    break;
-                }
-
-                case PA_SOURCE_IDLE:
-                case PA_SOURCE_RUNNING: {
-                    int r;
-
-                    if (u->source->thread_info.state == PA_SOURCE_INIT) {
-                        if (build_pollfd(u) < 0)
-                            /* FIXME: This will cause an assertion failure in
-                             * pa_source_put(), because with the current design
-                             * pa_source_put() is not allowed to fail. */
-                            return -PA_ERR_IO;
-                    }
-
-                    if (u->source->thread_info.state == PA_SOURCE_SUSPENDED) {
-                        if ((r = unsuspend(u)) < 0)
-                            return r;
-                    }
-
-                    break;
-                }
-
-                case PA_SOURCE_UNLINKED:
-                case PA_SOURCE_INIT:
-                case PA_SOURCE_INVALID_STATE:
-                    ;
-            }
-
-            break;
+            sync_mixer(u, port);
+            return 0;
+        }
     }
 
     return pa_source_process_msg(o, code, data, offset, chunk);
 }
 
 /* Called from main context */
-static int source_set_state_cb(pa_source *s, pa_source_state_t new_state, pa_suspend_cause_t new_suspend_cause) {
+static int source_set_state_in_main_thread_cb(pa_source *s, pa_source_state_t new_state, pa_suspend_cause_t new_suspend_cause) {
     pa_source_state_t old_state;
     struct userdata *u;
 
     pa_source_assert_ref(s);
     pa_assert_se(u = s->userdata);
+
+    /* When our session becomes active, we need to sync the mixer, because
+     * another user may have changed the mixer settings.
+     *
+     * If deferred volume is enabled, the syncing is done in the
+     * set_state_in_io_thread() callback instead. */
+    if (!(s->flags & PA_SOURCE_DEFERRED_VOLUME)
+            && (s->suspend_cause & PA_SUSPEND_SESSION)
+            && !(new_suspend_cause & PA_SUSPEND_SESSION))
+        sync_mixer(u, s->active_port);
 
     old_state = pa_source_get_state(u->source);
 
@@ -1099,6 +1117,69 @@ static int source_set_state_cb(pa_source *s, pa_source_state_t new_state, pa_sus
     else if (old_state == PA_SOURCE_SUSPENDED && PA_SOURCE_IS_OPENED(new_state))
         if (reserve_init(u, u->device_name) < 0)
             return -PA_ERR_BUSY;
+
+    return 0;
+}
+
+/* Called from the IO thread. */
+static int source_set_state_in_io_thread_cb(pa_source *s, pa_source_state_t new_state, pa_suspend_cause_t new_suspend_cause) {
+    struct userdata *u;
+
+    pa_assert(s);
+    pa_assert_se(u = s->userdata);
+
+    /* When our session becomes active, we need to sync the mixer, because
+     * another user may have changed the mixer settings.
+     *
+     * If deferred volume is disabled, the syncing is done in the
+     * set_state_in_main_thread() callback instead. */
+    if ((s->flags & PA_SOURCE_DEFERRED_VOLUME)
+            && (s->suspend_cause & PA_SUSPEND_SESSION)
+            && !(new_suspend_cause & PA_SUSPEND_SESSION))
+        sync_mixer(u, s->active_port);
+
+    /* It may be that only the suspend cause is changing, in which case there's
+     * nothing more to do. */
+    if (new_state == s->thread_info.state)
+        return 0;
+
+    switch (new_state) {
+
+        case PA_SOURCE_SUSPENDED: {
+            pa_assert(PA_SOURCE_IS_OPENED(u->source->thread_info.state));
+
+            suspend(u);
+
+            break;
+        }
+
+        case PA_SOURCE_IDLE:
+        case PA_SOURCE_RUNNING: {
+            int r;
+
+            if (u->source->thread_info.state == PA_SOURCE_INIT) {
+                if (build_pollfd(u) < 0)
+                    /* FIXME: This will cause an assertion failure, because
+                     * with the current design pa_source_put() is not allowed
+                     * to fail and pa_source_put() has no fallback code that
+                     * would start the source suspended if opening the device
+                     * fails. */
+                    return -PA_ERR_IO;
+            }
+
+            if (u->source->thread_info.state == PA_SOURCE_SUSPENDED) {
+                if ((r = unsuspend(u)) < 0)
+                    return r;
+            }
+
+            break;
+        }
+
+        case PA_SOURCE_UNLINKED:
+        case PA_SOURCE_INIT:
+        case PA_SOURCE_INVALID_STATE:
+            ;
+    }
 
     return 0;
 }
@@ -1115,10 +1196,8 @@ static int ctl_mixer_callback(snd_mixer_elem_t *elem, unsigned int mask) {
     if (!PA_SOURCE_IS_LINKED(u->source->state))
         return 0;
 
-    if (u->source->suspend_cause & PA_SUSPEND_SESSION) {
-        pa_source_set_mixer_dirty(u->source, true);
+    if (u->source->suspend_cause & PA_SUSPEND_SESSION)
         return 0;
-    }
 
     if (mask & SND_CTL_EVENT_MASK_VALUE) {
         pa_source_get_volume(u->source, true);
@@ -1137,10 +1216,8 @@ static int io_mixer_callback(snd_mixer_elem_t *elem, unsigned int mask) {
     if (mask == SND_CTL_EVENT_MASK_REMOVE)
         return 0;
 
-    if (u->source->suspend_cause & PA_SUSPEND_SESSION) {
-        pa_source_set_mixer_dirty(u->source, true);
+    if (u->source->suspend_cause & PA_SUSPEND_SESSION)
         return 0;
-    }
 
     if (mask & SND_CTL_EVENT_MASK_VALUE)
         pa_source_update_volume_and_mute(u->source);
@@ -1364,21 +1441,13 @@ static int source_set_port_cb(pa_source *s, pa_device_port *p) {
     pa_assert(u->mixer_handle);
 
     data = PA_DEVICE_PORT_DATA(p);
-
     pa_assert_se(u->mixer_path = data->path);
-    pa_alsa_path_select(u->mixer_path, data->setting, u->mixer_handle, s->muted);
-
     mixer_volume_init(u);
 
-    if (s->set_mute)
-        s->set_mute(s);
-    if (s->flags & PA_SOURCE_DEFERRED_VOLUME) {
-        if (s->write_volume)
-            s->write_volume(s);
-    } else {
-        if (s->set_volume)
-            s->set_volume(s);
-    }
+    if (s->flags & PA_SOURCE_DEFERRED_VOLUME)
+        pa_asyncmsgq_send(u->source->asyncmsgq, PA_MSGOBJECT(u->source), SOURCE_MESSAGE_SYNC_MIXER, p, 0, NULL);
+    else
+        sync_mixer(u, p);
 
     return 0;
 }
@@ -2035,7 +2104,8 @@ pa_source *pa_alsa_source_new(pa_module *m, pa_modargs *ma, const char*driver, p
     u->source->parent.process_msg = source_process_msg;
     if (u->use_tsched)
         u->source->update_requested_latency = source_update_requested_latency_cb;
-    u->source->set_state = source_set_state_cb;
+    u->source->set_state_in_main_thread = source_set_state_in_main_thread_cb;
+    u->source->set_state_in_io_thread = source_set_state_in_io_thread_cb;
     if (u->ucm_context)
         u->source->set_port = source_set_port_ucm_cb;
     else

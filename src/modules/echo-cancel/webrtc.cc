@@ -53,7 +53,6 @@ PA_C_DECL_END
 #define DEFAULT_EXPERIMENTAL_AGC false
 #define DEFAULT_AGC_START_VOLUME 85
 #define DEFAULT_BEAMFORMING false
-#define DEFAULT_TRACE false
 
 #define WEBRTC_AGC_MAX_VOLUME 255
 
@@ -64,7 +63,7 @@ class PALogSink : public rtc::LogSink {
 
         void OnLogMessage(const std::string& message)
         {
-            pa_log(message.c_str());
+            pa_log_info("webrtc: %s", message.c_str());
         }
 };
 
@@ -86,6 +85,8 @@ static const char* const valid_modargs[] = {
     "beamforming",
     "mic_geometry", /* documented in parse_mic_geometry() */
     "target_direction", /* documented in parse_mic_geometry() */
+    "log_level", /* one of: sensitive, verbose, info, warning, error, none.
+                    See LoggingSeverity */
     NULL
 };
 
@@ -226,6 +227,31 @@ static bool parse_mic_geometry(const char **mic_geometry, std::vector<webrtc::Po
     return true;
 }
 
+static bool parse_severity(const char* log_level, rtc::LoggingSeverity& severity)
+{
+    if (pa_streq(log_level, "sensitive")) {
+        severity = rtc::LS_SENSITIVE;
+        return true;
+    } else if (pa_streq(log_level, "verbose")) {
+        severity = rtc::LS_VERBOSE;
+        return true;
+    } else if (pa_streq(log_level, "info")) {
+        severity = rtc::LS_INFO;
+        return true;
+    } else if (pa_streq(log_level, "warning")) {
+        severity = rtc::LS_WARNING;
+        return true;
+    } else if (pa_streq(log_level, "error")) {
+        severity = rtc::LS_ERROR;
+        return true;
+    } else if (pa_streq(log_level, "none")) {
+        severity = rtc::LS_NONE;
+        return true;
+    } else {
+        return false;
+    }
+}
+
 bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
                        pa_sample_spec *rec_ss, pa_channel_map *rec_map,
                        pa_sample_spec *play_ss, pa_channel_map *play_map,
@@ -236,18 +262,28 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
     webrtc::AudioProcessing::Config apm_config;
     webrtc::Config config;
     PALogSink *logsink = NULL;
+    const char *log_level = NULL;
+    rtc::LoggingSeverity severity = rtc::LS_INFO;
     bool ns, agc, dgc, mobile, cn, vad, ext_filter, intelligibility, experimental_agc, beamforming;
     int rm = -1, i;
     uint32_t agc_start_volume;
     pa_modargs *ma;
 
-    logsink = new PALogSink;
-    rtc::LogMessage::AddLogToStream(logsink, rtc::LS_INFO);
-
     if (!(ma = pa_modargs_new(args, valid_modargs))) {
         pa_log("Failed to parse submodule arguments.");
         goto fail;
     }
+
+    log_level = pa_modargs_get_value(ma, "log_level", NULL);
+    if (log_level) {
+        if(!parse_severity(log_level, severity)) {
+            pa_log("Failed to parse log_level value");
+            goto fail;
+        }
+    }
+
+    logsink = new PALogSink;
+    rtc::LogMessage::AddLogToStream(logsink, severity);
 
     if (pa_modargs_get_value_boolean(ma, "high_pass_filter", &apm_config.high_pass_filter.enabled) < 0) {
         pa_log("Failed to parse high_pass_filter value");
@@ -574,6 +610,7 @@ void pa_webrtc_ec_done(pa_echo_canceller *ec) {
     }
 
     if (ec->params.webrtc.logsink) {
+        rtc::LogMessage::RemoveLogToStream((PALogSink*)ec->params.webrtc.logsink);
         delete (PALogSink*)ec->params.webrtc.logsink;
         ec->params.webrtc.logsink = NULL;
     }

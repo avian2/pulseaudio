@@ -64,9 +64,9 @@ struct pa_sink_volume_change {
     PA_LLIST_FIELDS(pa_sink_volume_change);
 };
 
-struct sink_message_set_port {
-    pa_device_port *port;
-    int ret;
+struct set_state_data {
+    pa_sink_state_t state;
+    pa_suspend_cause_t suspend_cause;
 };
 
 static void sink_free(pa_object *s);
@@ -150,7 +150,8 @@ void pa_sink_new_data_done(pa_sink_new_data *data) {
 static void reset_callbacks(pa_sink *s) {
     pa_assert(s);
 
-    s->set_state = NULL;
+    s->set_state_in_main_thread = NULL;
+    s->set_state_in_io_thread = NULL;
     s->get_volume = NULL;
     s->set_volume = NULL;
     s->write_volume = NULL;
@@ -253,7 +254,6 @@ pa_sink* pa_sink_new(
     s->flags = flags;
     s->priority = 0;
     s->suspend_cause = data->suspend_cause;
-    pa_sink_set_mixer_dirty(s, false);
     s->name = pa_xstrdup(name);
     s->proplist = pa_proplist_copy(data->proplist);
     s->driver = pa_xstrdup(pa_path_get_filename(data->driver));
@@ -427,20 +427,50 @@ static int sink_set_state(pa_sink *s, pa_sink_state_t state, pa_suspend_cause_t 
      * cause, or it might just add unnecessary complexity, given that the
      * current approach of not setting any suspend cause works well enough. */
 
-    if (s->set_state) {
-        ret = s->set_state(s, state, suspend_cause);
-        /* set_state() is allowed to fail only when resuming. */
-        pa_assert(ret >= 0 || resuming);
+    if (s->set_state_in_main_thread) {
+        if ((ret = s->set_state_in_main_thread(s, state, suspend_cause)) < 0) {
+            /* set_state_in_main_thread() is allowed to fail only when resuming. */
+            pa_assert(resuming);
+
+            /* If resuming fails, we set the state to SUSPENDED and
+             * suspend_cause to 0. */
+            state = PA_SINK_SUSPENDED;
+            suspend_cause = 0;
+            state_changed = false;
+            suspend_cause_changed = suspend_cause != s->suspend_cause;
+            resuming = false;
+
+            /* We know the state isn't changing. If the suspend cause isn't
+             * changing either, then there's nothing more to do. */
+            if (!suspend_cause_changed)
+                return ret;
+        }
     }
 
-    if (ret >= 0 && s->asyncmsgq && state_changed)
-        if ((ret = pa_asyncmsgq_send(s->asyncmsgq, PA_MSGOBJECT(s), PA_SINK_MESSAGE_SET_STATE, PA_UINT_TO_PTR(state), 0, NULL)) < 0) {
+    if (s->asyncmsgq) {
+        struct set_state_data data = { .state = state, .suspend_cause = suspend_cause };
+
+        if ((ret = pa_asyncmsgq_send(s->asyncmsgq, PA_MSGOBJECT(s), PA_SINK_MESSAGE_SET_STATE, &data, 0, NULL)) < 0) {
             /* SET_STATE is allowed to fail only when resuming. */
             pa_assert(resuming);
 
-            if (s->set_state)
-                s->set_state(s, PA_SINK_SUSPENDED, 0);
+            if (s->set_state_in_main_thread)
+                s->set_state_in_main_thread(s, PA_SINK_SUSPENDED, 0);
+
+            /* If resuming fails, we set the state to SUSPENDED and
+             * suspend_cause to 0. */
+            state = PA_SINK_SUSPENDED;
+            suspend_cause = 0;
+            state_changed = false;
+            suspend_cause_changed = suspend_cause != s->suspend_cause;
+            resuming = false;
+
+            /* We know the state isn't changing. If the suspend cause isn't
+             * changing either, then there's nothing more to do. */
+            if (!suspend_cause_changed)
+                return ret;
         }
+    }
 
     if (suspend_cause_changed) {
         char old_cause_buf[PA_SUSPEND_CAUSE_TO_STRING_BUF_SIZE];
@@ -450,9 +480,6 @@ static int sink_set_state(pa_sink *s, pa_sink_state_t state, pa_suspend_cause_t 
                      pa_suspend_cause_to_string(suspend_cause, new_cause_buf));
         s->suspend_cause = suspend_cause;
     }
-
-    if (ret < 0)
-        goto finish;
 
     if (state_changed) {
         pa_log_debug("%s: state: %s -> %s", s->name, pa_sink_state_to_string(s->state), pa_sink_state_to_string(state));
@@ -480,7 +507,6 @@ static int sink_set_state(pa_sink *s, pa_sink_state_t state, pa_suspend_cause_t 
                 i->suspend(i, state == PA_SINK_SUSPENDED);
     }
 
-finish:
     if ((suspending || resuming || suspend_cause_changed) && s->monitor_source && state != PA_SINK_UNLINKED)
         pa_source_sync_suspend(s->monitor_source);
 
@@ -865,11 +891,6 @@ int pa_sink_update_status(pa_sink*s) {
     return sink_set_state(s, pa_sink_used_by(s) ? PA_SINK_RUNNING : PA_SINK_IDLE, 0);
 }
 
-/* Called from any context - must be threadsafe */
-void pa_sink_set_mixer_dirty(pa_sink *s, bool is_dirty) {
-    pa_atomic_store(&s->mixer_dirty, is_dirty ? 1 : 0);
-}
-
 /* Called from main context */
 int pa_sink_suspend(pa_sink *s, bool suspend, pa_suspend_cause_t cause) {
     pa_suspend_cause_t merged_cause;
@@ -883,27 +904,6 @@ int pa_sink_suspend(pa_sink *s, bool suspend, pa_suspend_cause_t cause) {
         merged_cause = s->suspend_cause | cause;
     else
         merged_cause = s->suspend_cause & ~cause;
-
-    if (!(merged_cause & PA_SUSPEND_SESSION) && (pa_atomic_load(&s->mixer_dirty) != 0)) {
-        /* This might look racy but isn't: If somebody sets mixer_dirty exactly here,
-           it'll be handled just fine. */
-        pa_sink_set_mixer_dirty(s, false);
-        pa_log_debug("Mixer is now accessible. Updating alsa mixer settings.");
-        if (s->active_port && s->set_port) {
-            if (s->flags & PA_SINK_DEFERRED_VOLUME) {
-                struct sink_message_set_port msg = { .port = s->active_port, .ret = 0 };
-                pa_assert_se(pa_asyncmsgq_send(s->asyncmsgq, PA_MSGOBJECT(s), PA_SINK_MESSAGE_SET_PORT, &msg, 0, NULL) == 0);
-            }
-            else
-                s->set_port(s, s->active_port);
-        }
-        else {
-            if (s->set_mute)
-                s->set_mute(s);
-            if (s->set_volume)
-                s->set_volume(s);
-        }
-    }
 
     if (merged_cause)
         return sink_set_state(s, PA_SINK_SUSPENDED, merged_cause);
@@ -2845,12 +2845,19 @@ int pa_sink_process_msg(pa_msgobject *o, int code, void *userdata, int64_t offse
             return 0;
 
         case PA_SINK_MESSAGE_SET_STATE: {
-
+            struct set_state_data *data = userdata;
             bool suspend_change =
-                (s->thread_info.state == PA_SINK_SUSPENDED && PA_SINK_IS_OPENED(PA_PTR_TO_UINT(userdata))) ||
-                (PA_SINK_IS_OPENED(s->thread_info.state) && PA_PTR_TO_UINT(userdata) == PA_SINK_SUSPENDED);
+                (s->thread_info.state == PA_SINK_SUSPENDED && PA_SINK_IS_OPENED(data->state)) ||
+                (PA_SINK_IS_OPENED(s->thread_info.state) && data->state == PA_SINK_SUSPENDED);
 
-            s->thread_info.state = PA_PTR_TO_UINT(userdata);
+            if (s->set_state_in_io_thread) {
+                int r;
+
+                if ((r = s->set_state_in_io_thread(s, data->state, data->suspend_cause)) < 0)
+                    return r;
+            }
+
+            s->thread_info.state = data->state;
 
             if (s->thread_info.state == PA_SINK_SUSPENDED) {
                 s->thread_info.rewind_nbytes = 0;
@@ -2928,15 +2935,6 @@ int pa_sink_process_msg(pa_msgobject *o, int code, void *userdata, int64_t offse
         case PA_SINK_MESSAGE_SET_MAX_REQUEST:
 
             pa_sink_set_max_request_within_thread(s, (size_t) offset);
-            return 0;
-
-        case PA_SINK_MESSAGE_SET_PORT:
-
-            pa_assert(userdata);
-            if (s->set_port) {
-                struct sink_message_set_port *msg_data = userdata;
-                msg_data->ret = s->set_port(s, msg_data->port);
-            }
             return 0;
 
         case PA_SINK_MESSAGE_UPDATE_VOLUME_AND_MUTE:
@@ -3393,7 +3391,6 @@ size_t pa_sink_get_max_request(pa_sink *s) {
 /* Called from main context */
 int pa_sink_set_port(pa_sink *s, const char *name, bool save) {
     pa_device_port *port;
-    int ret;
 
     pa_sink_assert_ref(s);
     pa_assert_ctl_context();
@@ -3414,15 +3411,7 @@ int pa_sink_set_port(pa_sink *s, const char *name, bool save) {
         return 0;
     }
 
-    if (s->flags & PA_SINK_DEFERRED_VOLUME) {
-        struct sink_message_set_port msg = { .port = port, .ret = 0 };
-        pa_assert_se(pa_asyncmsgq_send(s->asyncmsgq, PA_MSGOBJECT(s), PA_SINK_MESSAGE_SET_PORT, &msg, 0, NULL) == 0);
-        ret = msg.ret;
-    }
-    else
-        ret = s->set_port(s, port);
-
-    if (ret < 0)
+    if (s->set_port(s, port) < 0)
         return -PA_ERR_NOENTITY;
 
     pa_subscription_post(s->core, PA_SUBSCRIPTION_EVENT_SINK|PA_SUBSCRIPTION_EVENT_CHANGE, s->index);
