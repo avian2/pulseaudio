@@ -53,6 +53,7 @@ PA_C_DECL_END
 #define DEFAULT_EXPERIMENTAL_AGC false
 #define DEFAULT_AGC_START_VOLUME 85
 #define DEFAULT_BEAMFORMING false
+#define DEFAULT_TRACE true
 
 #define WEBRTC_AGC_MAX_VOLUME 255
 
@@ -85,6 +86,7 @@ static const char* const valid_modargs[] = {
     "beamforming",
     "mic_geometry", /* documented in parse_mic_geometry() */
     "target_direction", /* documented in parse_mic_geometry() */
+    "trace",
     "log_level", /* one of: sensitive, verbose, info, warning, error, none.
                     See LoggingSeverity */
     NULL
@@ -268,6 +270,7 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
     int rm = -1, i;
     uint32_t agc_start_volume;
     pa_modargs *ma;
+    bool trace = false;
 
     if (!(ma = pa_modargs_new(args, valid_modargs))) {
         pa_log("Failed to parse submodule arguments.");
@@ -282,8 +285,16 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
         }
     }
 
-    logsink = new PALogSink;
-    rtc::LogMessage::AddLogToStream(logsink, severity);
+    trace = DEFAULT_TRACE;
+    if (pa_modargs_get_value_boolean(ma, "trace", &trace) < 0) {
+	    pa_log("Failed to parse trace value");
+	    goto fail;
+    }
+
+    if (trace) {
+	    logsink = new PALogSink;
+	    rtc::LogMessage::AddLogToStream(logsink, severity);
+    }
 
     if (pa_modargs_get_value_boolean(ma, "high_pass_filter", &apm_config.high_pass_filter.enabled) < 0) {
         pa_log("Failed to parse high_pass_filter value");
