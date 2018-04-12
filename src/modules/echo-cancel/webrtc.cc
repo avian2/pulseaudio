@@ -537,6 +537,7 @@ fail:
     if (apm)
         delete apm;
     if (logsink) {
+        rtc::LogMessage::RemoveLogToStream(logsink);
         delete logsink;
     }
 
