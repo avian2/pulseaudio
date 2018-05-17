@@ -9,10 +9,10 @@ Build-Depends: debhelper (>= 10),
     dh-exec,
     dpkg-dev (>= 1.17.14),
     intltool,
-    libasound2-dev (>= 1.0.24) [linux-any],
+    libasound2-dev [linux-any],
     libasyncns-dev,
     libavahi-client-dev,
-    libbluetooth-dev (>= 4.99) [linux-any] <!stage1>,
+    libbluetooth-dev [linux-any] <!stage1>,
     libsbc-dev [linux-any],
     libcap-dev [linux-any],
     libfftw3-dev,
@@ -23,25 +23,25 @@ Build-Depends: debhelper (>= 10),
     libjack-dev,
     libjson-c-dev (>= 0.11),
     liblircclient-dev,
-    libltdl-dev (>= 2.2.6a-2),
-    liborc-0.4-dev (>= 1:0.4.11),
+    libltdl-dev,
+    liborc-0.4-dev,
     libsamplerate0-dev,
-    libsndfile1-dev (>= 1.0.20),
+    libsndfile1-dev,
     libsoxr-dev (>= 0.1.1),
     libspeexdsp-dev (>= 1.2~rc1),
     libssl-dev,
     libsystemd-dev [linux-any],
     libtdb-dev [!hurd-any],
-    libudev-dev (>= 143) [linux-any],
+    libudev-dev [linux-any],
     libwebrtc-audio-processing-dev (>= 0.3-1tomaz1) [linux-any],
     libwrap0-dev,
     libx11-xcb-dev,
-    libxcb1-dev (>= 1.6),
+    libxcb1-dev,
     libxtst-dev
-Standards-Version: 4.1.1
+Standards-Version: 4.1.3
 Rules-Requires-Root: no
-Vcs-Git: https://anonscm.debian.org/git/pkg-pulseaudio/pulseaudio.git
-Vcs-Browser: https://anonscm.debian.org/cgit/pkg-pulseaudio/pulseaudio.git
+Vcs-Browser: https://salsa.debian.org/pulseaudio-team/pulseaudio
+Vcs-Git: https://salsa.debian.org/pulseaudio-team/pulseaudio.git
 Homepage: http://www.pulseaudio.org
 
 Package: pulseaudio
@@ -183,7 +183,7 @@ Description: RAOP module for PulseAudio sound server
 Package: pulseaudio-module-bluetooth
 Build-Profiles: <!stage1>
 Architecture: linux-any
-Priority: extra
+Priority: optional
 Depends: ${shlibs:Depends}, ${misc:Depends}, bluez (>= 5.23)
 Breaks: pulseaudio (<< 0.9.14-2)
 Description: Bluetooth module for PulseAudio sound server
@@ -199,7 +199,7 @@ Description: Bluetooth module for PulseAudio sound server
 Package: pulseaudio-equalizer
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends},
- python, python-qt4, python-sip, python-qt4-dbus, python-dbus
+ python, python-pyqt5, python-sip, python-dbus.mainloop.pyqt5, python-dbus
 Description: Equalizer sink module for PulseAudio sound server
  PulseAudio, previously known as Polypaudio, is a sound server for POSIX and
  WIN32 systems. It is a drop in replacement for the ESD sound server with
