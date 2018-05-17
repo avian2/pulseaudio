@@ -76,3 +76,13 @@ override_dh_installdocs:
 override_dh_clean:
 	dh_clean
 	rm -f debian/shlibs.local
+
+override_dh_autoreconf:
+	dh_autoreconf debian/rules -- _autoreconf
+
+_autoreconf:
+	# This is from ./bootstrap. Note AUTOPOINT above. We need to run both
+	# autopoint and intltoolize when running from a clean git checkout.
+	# (otherwise errors about missing build-aux/config.rpath)
+	autopoint -f
+	autoreconf -f -i
