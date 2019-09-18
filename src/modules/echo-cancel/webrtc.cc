@@ -35,12 +35,11 @@ PA_C_DECL_BEGIN
 PA_C_DECL_END
 
 #include <webrtc/modules/audio_processing/include/audio_processing.h>
-#include <webrtc/modules/interface/module_common_types.h>
-#include <webrtc/system_wrappers/include/trace.h>
+#include <webrtc/modules/include/module_common_types.h>
+#include <webrtc/rtc_base/logging.h>
 
 #define BLOCK_SIZE_US 10000
 
-#define DEFAULT_HIGH_PASS_FILTER true
 #define DEFAULT_NOISE_SUPPRESSION true
 #define DEFAULT_ANALOG_GAIN_CONTROL true
 #define DEFAULT_DIGITAL_GAIN_CONTROL false
@@ -54,12 +53,24 @@ PA_C_DECL_END
 #define DEFAULT_EXPERIMENTAL_AGC false
 #define DEFAULT_AGC_START_VOLUME 85
 #define DEFAULT_BEAMFORMING false
-#define DEFAULT_TRACE false
+#define DEFAULT_TRACE true
 
 #define WEBRTC_AGC_MAX_VOLUME 255
 
+class PALogSink : public rtc::LogSink {
+    public:
+        PALogSink() {};
+        ~PALogSink() {};
+
+        void OnLogMessage(const std::string& message)
+        {
+            pa_log_info("webrtc: %s", message.c_str());
+        }
+};
+
 static const char* const valid_modargs[] = {
     "high_pass_filter",
+    "residual_echo_detector",
     "noise_suppression",
     "analog_gain_control",
     "digital_gain_control",
@@ -76,6 +87,8 @@ static const char* const valid_modargs[] = {
     "mic_geometry", /* documented in parse_mic_geometry() */
     "target_direction", /* documented in parse_mic_geometry() */
     "trace",
+    "log_level", /* one of: sensitive, verbose, info, warning, error, none.
+                    See LoggingSeverity */
     NULL
 };
 
@@ -93,20 +106,6 @@ static int routing_mode_from_string(const char *rmode) {
     else
         return -1;
 }
-
-class PaWebrtcTraceCallback : public webrtc::TraceCallback {
-    void Print(webrtc::TraceLevel level, const char *message, int length)
-    {
-        if (level & webrtc::kTraceError || level & webrtc::kTraceCritical)
-            pa_log(message);
-        else if (level & webrtc::kTraceWarning)
-            pa_log_warn(message);
-        else if (level & webrtc::kTraceInfo)
-            pa_log_info(message);
-        else
-            pa_log_debug(message);
-    }
-};
 
 static int webrtc_volume_from_pa(pa_volume_t v)
 {
@@ -230,6 +229,31 @@ static bool parse_mic_geometry(const char **mic_geometry, std::vector<webrtc::Po
     return true;
 }
 
+static bool parse_severity(const char* log_level, rtc::LoggingSeverity& severity)
+{
+    if (pa_streq(log_level, "sensitive")) {
+        severity = rtc::LS_SENSITIVE;
+        return true;
+    } else if (pa_streq(log_level, "verbose")) {
+        severity = rtc::LS_VERBOSE;
+        return true;
+    } else if (pa_streq(log_level, "info")) {
+        severity = rtc::LS_INFO;
+        return true;
+    } else if (pa_streq(log_level, "warning")) {
+        severity = rtc::LS_WARNING;
+        return true;
+    } else if (pa_streq(log_level, "error")) {
+        severity = rtc::LS_ERROR;
+        return true;
+    } else if (pa_streq(log_level, "none")) {
+        severity = rtc::LS_NONE;
+        return true;
+    } else {
+        return false;
+    }
+}
+
 bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
                        pa_sample_spec *rec_ss, pa_channel_map *rec_map,
                        pa_sample_spec *play_ss, pa_channel_map *play_map,
@@ -237,8 +261,12 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
                        uint32_t *nframes, const char *args) {
     webrtc::AudioProcessing *apm = NULL;
     webrtc::ProcessingConfig pconfig;
+    webrtc::AudioProcessing::Config apm_config;
     webrtc::Config config;
-    bool hpf, ns, agc, dgc, mobile, cn, vad, ext_filter, intelligibility, experimental_agc, beamforming;
+    PALogSink *logsink = NULL;
+    const char *log_level = NULL;
+    rtc::LoggingSeverity severity = rtc::LS_INFO;
+    bool ns, agc, dgc, mobile, cn, vad, ext_filter, intelligibility, experimental_agc, beamforming;
     int rm = -1, i;
     uint32_t agc_start_volume;
     pa_modargs *ma;
@@ -249,9 +277,32 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
         goto fail;
     }
 
-    hpf = DEFAULT_HIGH_PASS_FILTER;
-    if (pa_modargs_get_value_boolean(ma, "high_pass_filter", &hpf) < 0) {
+    log_level = pa_modargs_get_value(ma, "log_level", NULL);
+    if (log_level) {
+        if(!parse_severity(log_level, severity)) {
+            pa_log("Failed to parse log_level value");
+            goto fail;
+        }
+    }
+
+    trace = DEFAULT_TRACE;
+    if (pa_modargs_get_value_boolean(ma, "trace", &trace) < 0) {
+	    pa_log("Failed to parse trace value");
+	    goto fail;
+    }
+
+    if (trace) {
+	    logsink = new PALogSink;
+	    rtc::LogMessage::AddLogToStream(logsink, severity);
+    }
+
+    if (pa_modargs_get_value_boolean(ma, "high_pass_filter", &apm_config.high_pass_filter.enabled) < 0) {
         pa_log("Failed to parse high_pass_filter value");
+        goto fail;
+    }
+
+    if (pa_modargs_get_value_boolean(ma, "residual_echo_detector", &apm_config.residual_echo_detector.enabled) < 0) {
+        pa_log("Failed to parse residual_echo_detector value");
         goto fail;
     }
 
@@ -361,19 +412,6 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
     if (experimental_agc)
         config.Set<webrtc::ExperimentalAgc>(new webrtc::ExperimentalAgc(true, ec->params.webrtc.agc_start_volume));
 
-    trace = DEFAULT_TRACE;
-    if (pa_modargs_get_value_boolean(ma, "trace", &trace) < 0) {
-        pa_log("Failed to parse trace value");
-        goto fail;
-    }
-
-    if (trace) {
-        webrtc::Trace::CreateTrace();
-        webrtc::Trace::set_level_filter(webrtc::kTraceAll);
-        ec->params.webrtc.trace_callback = new PaWebrtcTraceCallback();
-        webrtc::Trace::SetTraceCallback((PaWebrtcTraceCallback *) ec->params.webrtc.trace_callback);
-    }
-
     webrtc_ec_fixate_spec(rec_ss, rec_map, play_ss, play_map, out_ss, out_map, beamforming);
 
     /* We do this after fixate because we need the capture channel count */
@@ -423,7 +461,9 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
             config.Set<webrtc::Beamforming>(new webrtc::Beamforming(true, geometry, direction));
     }
 
-    apm = webrtc::AudioProcessing::Create(config);
+    apm = webrtc::AudioProcessingBuilder().Create();
+    apm->SetExtraOptions(config);
+    apm->ApplyConfig(apm_config);
 
     pconfig = {
         webrtc::StreamConfig(rec_ss->rate, rec_ss->channels, false), /* input stream */
@@ -435,9 +475,6 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
         pa_log("Error initialising audio processing module");
         goto fail;
     }
-
-    if (hpf)
-        apm->high_pass_filter()->Enable(true);
 
     if (!mobile) {
         apm->echo_cancellation()->enable_drift_compensation(ec->params.drift_compensation);
@@ -478,6 +515,7 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
         apm->voice_detection()->Enable(true);
 
     ec->params.webrtc.apm = apm;
+    ec->params.webrtc.logsink = logsink;
     ec->params.webrtc.rec_ss = *rec_ss;
     ec->params.webrtc.play_ss = *play_ss;
     ec->params.webrtc.out_ss = *out_ss;
@@ -496,11 +534,12 @@ bool pa_webrtc_ec_init(pa_core *c, pa_echo_canceller *ec,
 fail:
     if (ma)
         pa_modargs_free(ma);
-    if (ec->params.webrtc.trace_callback) {
-        webrtc::Trace::ReturnTrace();
-        delete ((PaWebrtcTraceCallback *) ec->params.webrtc.trace_callback);
-    } if (apm)
+    if (apm)
         delete apm;
+    if (logsink) {
+        rtc::LogMessage::RemoveLogToStream(logsink);
+        delete logsink;
+    }
 
     return false;
 }
@@ -577,14 +616,15 @@ void pa_webrtc_ec_run(pa_echo_canceller *ec, const uint8_t *rec, const uint8_t *
 void pa_webrtc_ec_done(pa_echo_canceller *ec) {
     int i;
 
-    if (ec->params.webrtc.trace_callback) {
-        webrtc::Trace::ReturnTrace();
-        delete ((PaWebrtcTraceCallback *) ec->params.webrtc.trace_callback);
-    }
-
     if (ec->params.webrtc.apm) {
         delete (webrtc::AudioProcessing*)ec->params.webrtc.apm;
         ec->params.webrtc.apm = NULL;
+    }
+
+    if (ec->params.webrtc.logsink) {
+        rtc::LogMessage::RemoveLogToStream((PALogSink*)ec->params.webrtc.logsink);
+        delete (PALogSink*)ec->params.webrtc.logsink;
+        ec->params.webrtc.logsink = NULL;
     }
 
     for (i = 0; i < ec->params.webrtc.rec_ss.channels; i++)
