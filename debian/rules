@@ -78,6 +78,7 @@ override_dh_clean:
 	rm -f debian/shlibs.local
 
 override_dh_autoreconf:
+	[ -e .tarball-version ] || cp debian/gbp.version .tarball-version
 	dh_autoreconf debian/rules -- _autoreconf
 
 _autoreconf:
