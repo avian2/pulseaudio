@@ -1,3 +1,9 @@
+pulseaudio (12.0-1tomaz2) unstable; urgency=medium
+
+  * Build with git-buildpackage.
+
+ -- Tomaz Solc <tomaz.solc@tablix.org>  Wed, 18 Sep 2019 08:20:13 +0200
+
 pulseaudio (12.0-1tomaz1) unstable; urgency=medium
 
   * Updated module-echo-cancel to work with updated webrtc-audio-processing
