@@ -1,3 +1,9 @@
+pulseaudio (12.0-1tomaz3) unstable; urgency=medium
+
+  * Fix volume-test.
+
+ -- Tomaz Solc <tomaz.solc@tablix.org>  Tue, 19 Oct 2021 18:36:15 +0100
+
 pulseaudio (12.0-1tomaz2) unstable; urgency=medium
 
   * Build with git-buildpackage.
