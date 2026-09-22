@@ -1,3 +1,10 @@
+pulseaudio (12.0-1tomaz4) unstable; urgency=medium
+
+  * Don't build pulseaudio-module-lirc.
+  * Fix alsa includes: they were moved under alsa/.
+
+ -- Tomaz Solc <tomaz.solc@tablix.org>  Tue, 22 Sep 2026 11:29:59 +0000
+
 pulseaudio (12.0-1tomaz3) unstable; urgency=medium
 
   * Fix volume-test.
