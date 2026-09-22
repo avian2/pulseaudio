@@ -1,0 +1,39 @@
+diff --git a/configure.ac b/configure.ac
+index c9c414f..470ff4b 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -833,7 +833,7 @@ AS_IF([test "x$enable_alsa" = "xyes" && test "x$HAVE_ALSA" = "x0"],
+ AS_IF([test "x$HAVE_ALSA" = "x1"],
+     [
+         save_CPPFLAGS="$CPPFLAGS"; CPPFLAGS="$CPPFLAGS $ASOUNDLIB_CFLAGS"
+-        AC_CHECK_HEADERS([use-case.h], HAVE_ALSA_UCM=1, HAVE_ALSA_UCM=0)
++        AC_CHECK_HEADERS([alsa/use-case.h], HAVE_ALSA_UCM=1, HAVE_ALSA_UCM=0)
+         CPPFLAGS="$save_CPPFLAGS"
+     ],
+     HAVE_ALSA_UCM=0)
+diff --git a/src/modules/alsa/alsa-sink.c b/src/modules/alsa/alsa-sink.c
+index 4568a19..c9a1b06 100644
+--- a/src/modules/alsa/alsa-sink.c
++++ b/src/modules/alsa/alsa-sink.c
+@@ -25,7 +25,7 @@
+ #include <signal.h>
+ #include <stdio.h>
+ 
+-#include <asoundlib.h>
++#include <alsa/asoundlib.h>
+ 
+ #ifdef HAVE_VALGRIND_MEMCHECK_H
+ #include <valgrind/memcheck.h>
+diff --git a/src/modules/alsa/alsa-ucm.h b/src/modules/alsa/alsa-ucm.h
+index 53abf3f..c926f3c 100644
+--- a/src/modules/alsa/alsa-ucm.h
++++ b/src/modules/alsa/alsa-ucm.h
+@@ -23,7 +23,7 @@
+ ***/
+ 
+ #ifdef HAVE_ALSA_UCM
+-#include <use-case.h>
++#include <alsa/use-case.h>
+ #else
+ typedef void snd_use_case_mgr_t;
+ #endif
